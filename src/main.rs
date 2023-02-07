@@ -60,7 +60,6 @@ async fn showme(c: Channel) {
         info!("New article: {}", msg);
         toot(msg).await;
     }
-    println!();
 }
 
 async fn magic() {
