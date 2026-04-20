@@ -1,87 +1,124 @@
-mod scratchpad;
+mod db;
+mod wasi_http;
 
-use chrono;
+use anyhow::Result;
 use rss::Channel;
 use std::env;
-use std::error::Error;
-use std::io;
-use std::io::prelude::*;
-use std::string::ToString;
-use tokio;
+use wasi as bindings;
+use wasi_http::http_request;
 
-use reqwest::header::AUTHORIZATION;
-
-use log::{debug, error, info, trace, warn};
-use log4rs;
-use serde_yaml;
-
-const HOWOFTEN: i64 = 10;
-const RSS_ADD: &str = "https://www.newspenguin.com/rss/allArticle.xml";
-
-async fn feed(url: String) -> Result<Channel, Box<dyn Error>> {
-    let content = reqwest::get(url).await?.bytes().await?;
+async fn feed(url: String) -> Result<Channel> {
+    let content =
+        http_request(bindings::http::types::Method::Get, &url, vec![], None)
+            .await?;
     let channel = Channel::read_from(&content[..])?;
     Ok(channel)
 }
 
-async fn toot(msg: String) {
-    let ACCESS_TOKEN = env::var("MSTDN_ACCESS_TOKEN")
-        .expect("You must set the MSTDN_ACCESS_TOKEN environment var!");
+async fn toot(msg: String) -> Result<()> {
+    let access_token = env::var("NEWSPENGUIN_MSTD_ACCESS_TOKEN")
+        .expect("You must set the NEWSPENGUIN_MSTD_ACCESS_TOKEN environment var!");
+    let access_url = env::var("NEWSPENGUIN_MSTD_API_URI")
+        .unwrap_or_else(|_| "https://mstd.seungjin.net".to_string());
 
-    let res = reqwest::Client::new()
-        .post("https://mstd.seungjin.net/api/v1/statuses")
-        .header(AUTHORIZATION, format!("Bearer {}", ACCESS_TOKEN))
-        .form(&[("status", msg), ("visibility", "private".to_string())])
-        .send()
-        .await;
-    match res {
-        Ok(_) => info!("Message posted!"),
-        Err(e) => error!("Error on posting message"),
-    }
+    let body =
+        format!("status={}&visibility=private", urlencoding::encode(&msg));
+
+    let headers = vec![
+        (
+            "Authorization".to_string(),
+            format!("Bearer {}", access_token).into_bytes(),
+        ),
+        (
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string().into_bytes(),
+        ),
+    ];
+
+    let url = format!("{}/api/v1/statuses", access_url.trim_end_matches('/'));
+
+    http_request(
+        bindings::http::types::Method::Post,
+        &url,
+        headers,
+        Some(body.into_bytes()),
+    )
+    .await?;
+
+    println!("Message posted!");
+    Ok(())
 }
 
-async fn showme(c: Channel) {
+async fn showme(c: Channel, saved_date_str: Option<String>) -> Result<()> {
+    let saved_date = saved_date_str
+        .and_then(|s| chrono::DateTime::parse_from_rfc2822(&s).ok());
+
     for i in c.items {
-        if scratchpad::new_title(i.clone().title.unwrap())
-            .await
-            .unwrap()
-        {
-            continue;
+        if let Some(pub_date_str) = &i.pub_date {
+            if let Ok(pub_date) =
+                chrono::DateTime::parse_from_rfc2822(pub_date_str)
+            {
+                if let Some(saved) = saved_date {
+                    if pub_date <= saved {
+                        continue;
+                    }
+                }
+            }
         }
 
-        scratchpad::write_title(i.clone().title.unwrap()).await;
+        let title = i.title.clone().unwrap_or_default();
         let msg: String = format!(
             "{}:\n{}\n{}\n({})",
-            i.title.unwrap(),
-            i.description.unwrap(),
-            i.link.unwrap(),
-            i.pub_date.unwrap()
+            title,
+            i.description.unwrap_or_default(),
+            i.link.unwrap_or_default(),
+            i.pub_date.unwrap_or_default()
         );
-        info!("New article: {}", msg);
-        toot(msg).await;
+        println!("New article: {}", title);
+        toot(msg).await?;
     }
+    Ok(())
 }
 
-async fn magic() {
-    let a = feed(RSS_ADD.to_string()).await.unwrap();
-    showme(a).await;
+async fn magic() -> Result<()> {
+    let rss_url = env::var("NEWSPENGUIN_RSS_URI")
+        .unwrap_or_else(|_| "https://www.newspenguin.com/rss/allArticle.xml".to_string());
+    let a = feed(rss_url).await?;
+
+    let last_build_date = a.last_build_date().unwrap_or_default().to_string();
+    let kv_key = "newspenguin-rss.last_build_date";
+
+    let saved_date = db::get_kv(kv_key).await.ok().flatten();
+
+    if let Some(ref saved) = saved_date {
+        if saved == &last_build_date && !last_build_date.is_empty() {
+            println!(
+                "No new updates since last build date: {}",
+                last_build_date
+            );
+            return Ok(());
+        }
+    }
+
+    showme(a, saved_date).await?;
+
+    if !last_build_date.is_empty() {
+        db::set_kv(kv_key, &last_build_date).await?;
+    }
+
+    Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    let config_str = include_str!("log4rs.yaml");
-    let config = serde_yaml::from_str(config_str).unwrap();
-    log4rs::init_raw_config(config).unwrap();
+fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+    println!("Start checking");
 
-    let mut interval_timer =
-        tokio::time::interval(chrono::Duration::minutes(HOWOFTEN).to_std().unwrap());
-    loop {
-        // Wait for the next interval tick
-        info!("Start checking");
-        interval_timer.tick().await;
-        tokio::spawn(async {
-            magic().await;
-        }); // For async task
-            //tokio::task::spawn_blocking(|| do_my_task()); // For blocking task
-    }
+    futures::executor::block_on(async {
+        if let Err(e) = magic().await {
+            eprintln!("Error: {:?}", e);
+        }
+    });
+
+    println!("Done");
+    Ok(())
 }
