@@ -38,8 +38,17 @@ async fn execute_sql(
     sql: String,
     args: Vec<Value>,
 ) -> Result<serde_json::Value> {
-    let url = env::var("LIBSQL_URL").expect("LIBSQL_URL not set");
+    let url_raw = env::var("LIBSQL_URL").expect("LIBSQL_URL not set");
+    let mut url = url_raw.trim().to_string();
+    if url.starts_with("libsql://") {
+        url = url.replace("libsql://", "https://");
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        url = format!("https://{}", url);
+    }
+    
     let token = env::var("LIBSQL_TOKEN").expect("LIBSQL_TOKEN not set");
+    let token = token.trim();
 
     let pipeline = Pipeline {
         requests: vec![
@@ -69,9 +78,10 @@ async fn execute_sql(
         ),
     ];
 
+    let full_url = format!("{}/v2/pipeline", url.trim_end_matches('/'));
     let resp_body = http_request(
         bindings::http::types::Method::Post,
-        &format!("{}/v2/pipeline", url.trim_end_matches('/')),
+        &full_url,
         headers,
         Some(body),
     )
@@ -81,20 +91,22 @@ async fn execute_sql(
     let result = resp
         .results
         .get(0)
-        .ok_or_else(|| anyhow::anyhow!("No results in pipeline response"))?;
+        .ok_or_else(|| anyhow::anyhow!("No results in pipeline response from {}", full_url))?;
 
     if let Some(error) = result.get("error") {
-        return Err(anyhow::anyhow!("Turso error: {}", error));
+        return Err(anyhow::anyhow!("Turso error at {}: {}", full_url, error));
     }
 
     let response = result
         .get("response")
-        .ok_or_else(|| anyhow::anyhow!("No response in pipeline result"))?;
+        .ok_or_else(|| anyhow::anyhow!("No response in pipeline result from {}", full_url))?;
     Ok(response.clone())
 }
 
 pub async fn get_kv(key: &str) -> Result<Option<String>> {
-    let table_name = env::var("LIBSQL_KV_TABLE").unwrap_or_else(|_| "kv_store".to_string());
+    let table_name_raw = env::var("LIBSQL_KV_TABLE").unwrap_or_else(|_| "kv_store".to_string());
+    let table_name = table_name_raw.trim();
+    let table_name = if table_name.is_empty() { "kv_store" } else { table_name };
 
     // Ensure table exists
     let _ = execute_sql(
@@ -112,16 +124,21 @@ pub async fn get_kv(key: &str) -> Result<Option<String>> {
     )
     .await?;
 
-    let val = resp.pointer("/result/rows/0/0/value");
+    // Try multiple pointers as Turso API versions vary
+    let val = resp.pointer("/result/rows/0/0/value")
+        .or_else(|| resp.pointer("/result/rows/0/0"));
     
     match val {
         Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+        Some(v) => Ok(Some(v.to_string().trim_matches('"').to_string())),
         _ => Ok(None),
     }
 }
 
 pub async fn set_kv(key: &str, value: &str) -> Result<()> {
-    let table_name = env::var("LIBSQL_KV_TABLE").unwrap_or_else(|_| "kv_store".to_string());
+    let table_name_raw = env::var("LIBSQL_KV_TABLE").unwrap_or_else(|_| "kv_store".to_string());
+    let table_name = table_name_raw.trim();
+    let table_name = if table_name.is_empty() { "kv_store" } else { table_name };
 
     // Ensure table exists
     let _ = execute_sql(
