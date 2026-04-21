@@ -1,6 +1,6 @@
 [package]
-name = "wasi-newspenguin-rss-bot"
-author = ["Seungjin Kim <seungjin@duck.com>"]
+name = "newspenguin-rss-bot"
+authors = ["Seungjin Kim <seungjin@duck.com>"]
 version = "0.1.0"
 edition = "2021"
 

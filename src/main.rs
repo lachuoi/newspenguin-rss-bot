@@ -87,7 +87,7 @@ async fn toot(msg: String) -> Result<()> {
         ),
         (
             "User-Agent".to_string(),
-            "wasi-newspenguin-rss-bot/0.1.0".to_string().into_bytes(),
+            "newspenguin-rss-bot/0.1.0".to_string().into_bytes(),
         ),
     ];
 
