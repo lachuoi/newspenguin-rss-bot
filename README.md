@@ -63,3 +63,4 @@ The project includes a `Dockerfile` to build the `.wasm` component in a containe
 
 - [NewsPenguin RSS Index](https://www.newspenguin.com/rssIndex.html)
 - [Bot Account on Mastodon](https://mstd.seungjin.net/@newspenguin)
+- [Github Mirror](https://github.com/lachuoi/newspenguin-rss-bot)
