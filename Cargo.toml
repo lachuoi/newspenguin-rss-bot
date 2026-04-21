@@ -20,7 +20,3 @@ dotenvy = "0.15.7"
 
 [package.metadata.component]
 package = "component:newspenguin-rss-bot"
-
-[package.metadata.component.target]
-path = "wit"
-world = "bot"
