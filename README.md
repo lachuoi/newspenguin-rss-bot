@@ -67,3 +67,10 @@ The project includes a `Dockerfile` to build the `.wasm` component in a containe
 - [NewsPenguin RSS Index](https://www.newspenguin.com/rssIndex.html)
 - [Bot Account on Mastodon](https://mstd.seungjin.net/@newspenguin)
 - [Github Mirror](https://github.com/lachuoi/newspenguin-rss-bot)
+
+## License
+
+This project is dual-licensed under the MIT License and the Apache License (Version 2.0).
+
+- See [LICENSE-MIT](LICENSE-MIT) for details.
+- See [LICENSE-APACHE](LICENSE-APACHE) for details.
