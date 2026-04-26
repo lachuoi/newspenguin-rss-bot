@@ -118,7 +118,7 @@ pub async fn get_kv(key: &str) -> Result<Option<String>> {
 
     // Ensure table exists
     let _ = execute_sql(
-        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT)", table_name),
+        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", table_name),
         vec![],
     )
     .await?;
@@ -150,13 +150,13 @@ pub async fn set_kv(key: &str, value: &str) -> Result<()> {
 
     // Ensure table exists
     let _ = execute_sql(
-        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT)", table_name),
+        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", table_name),
         vec![],
     )
     .await?;
 
     execute_sql(
-        format!("INSERT INTO {} (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", table_name),
+        format!("INSERT INTO {} (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP", table_name),
         vec![
             Value {
                 value_type: "text".to_string(),
