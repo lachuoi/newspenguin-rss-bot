@@ -24,6 +24,12 @@ The bot is built as a **WASI Preview 2** component. This ensures:
 ### La Chuoi KV Store
 The bot uses a persistent Key-Value store provided by the La Chuoi runtime for state management.
 
+#### Storage Schema
+In the La Chuoi runtime, the `task_kv_value` table supports duplicate keys. The logical uniqueness of a record is defined by the tuple:
+**`(task_id, key, value)`**
+
+This allows the application to store multiple distinct values under the same key string.
+
 #### 1. Last Processed Timestamp
 - **Key**: `newspenguin-rss.last_build_date`
 - **Value**: The UTC timestamp of the last successful run.
@@ -32,8 +38,8 @@ The bot uses a persistent Key-Value store provided by the La Chuoi runtime for s
 #### 2. Duplicate Detection (Duplicate Keys)
 The bot leverages La Chuoi's support for **duplicate keys** to track post history.
 - **Key**: `posted link`
-- **Value**: `<URL>` (multiple entries allowed)
-- **Logic**: When an article is processed, the bot checks if its link exists in the list of values for the `posted link` key. If not found, the article is posted and the link is appended to the KV store.
+- **Value**: `<URL>` (e.g., `https://...`)
+- **Logic**: When an article is processed, the bot checks if its link exists in the list of values for the `posted link` key. If not found, the article is posted and the link is appended to the KV store as a new entry.
 
 ### Local Fallback
 When running outside of a La Chuoi environment (e.g., local development), the bot falls back to `storage.json`. This file mimics the duplicate key behavior by storing keys as arrays of strings.
