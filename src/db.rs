@@ -93,10 +93,11 @@ fn load_local_storage() -> HashMap<String, Vec<String>> {
             let mut new_storage: HashMap<String, Vec<String>> = HashMap::new();
             for (k, v) in old_storage {
                 if k.starts_with("link:") {
+                    // Strip "link:" prefix and use "posted link" as key
                     new_storage
                         .entry("posted link".to_string())
                         .or_default()
-                        .push(k);
+                        .push(k["link:".len()..].to_string());
                 } else {
                     new_storage.insert(k, vec![v]);
                 }
@@ -156,13 +157,11 @@ pub async fn set_kv(_app_id: i64, key: &str, value: &str) -> Result<()> {
 
 pub async fn check_link_published(app_id: i64, link: &str) -> Result<bool> {
     let links = get_kv_list(app_id, "posted link").await?;
-    let target = format!("link:{}", link);
-    Ok(links.contains(&target))
+    Ok(links.contains(&link.to_string()))
 }
 
 pub async fn add_posted_link(app_id: i64, link: &str) -> Result<()> {
-    let value = format!("link:{}", link);
-    set_kv(app_id, "posted link", &value).await?;
+    set_kv(app_id, "posted link", link).await?;
     Ok(())
 }
 

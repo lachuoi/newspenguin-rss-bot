@@ -32,7 +32,7 @@ The bot uses a persistent Key-Value store provided by the La Chuoi runtime for s
 #### 2. Duplicate Detection (Duplicate Keys)
 The bot leverages La Chuoi's support for **duplicate keys** to track post history.
 - **Key**: `posted link`
-- **Value**: `link:<URL>` (multiple entries allowed)
+- **Value**: `<URL>` (multiple entries allowed)
 - **Logic**: When an article is processed, the bot checks if its link exists in the list of values for the `posted link` key. If not found, the article is posted and the link is appended to the KV store.
 
 ### Local Fallback
