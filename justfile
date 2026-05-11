@@ -21,16 +21,23 @@ clean:
     cargo clean
 
 # Run the project
-run flags="": (build flags)
+run flags="":
+    @just build $(if echo "{{flags}}" | grep -q "\--release"; then echo "--release"; else echo ""; fi)
     @wasmtime run \
+        --dir . \
         -S http \
         -S inherit-network=y \
         -S allow-ip-name-lookup=y \
         -S inherit-env=y \
-        ./target/wasm32-wasip2/$(if [ "{{flags}}" == "--release" ]; then echo "release"; else echo "debug"; fi)/newspenguin-rss-bot.wasm
+        ./target/wasm32-wasip2/$(if echo "{{flags}}" | grep -q "\--release"; then echo "release"; else echo "debug"; fi)/newspenguin-rss-bot.wasm \
+        {{flags}}
 
 
 
 
 # Run the project in release mode
 run-release: (run "--release")
+
+# Delete Mastodon posts from the last 3 hours
+cleanup-mastodon:
+    @./delete_recent_posts.sh

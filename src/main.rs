@@ -98,7 +98,19 @@ fn parse_rss_date(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     parse_date(s)
 }
 
-async fn toot(msg: String) -> Result<()> {
+async fn toot(msg: String, dry_run: bool) -> Result<()> {
+    let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "production".to_string());
+    if environment == "development" {
+        println!("Development mode: Skipping Mastodon post.");
+        println!("Message would have been:\n{}", msg);
+        return Ok(());
+    }
+
+    if dry_run {
+        println!("Dry run: Would post message:\n{}", msg);
+        return Ok(());
+    }
+
     let access_token = env::var("NEWSPENGUIN_MSTD_ACCESS_TOKEN").expect(
         "You must set the NEWSPENGUIN_MSTD_ACCESS_TOKEN environment var!",
     );
@@ -139,31 +151,69 @@ async fn toot(msg: String) -> Result<()> {
     Ok(())
 }
 
-async fn showme(c: Channel, saved_date_str: Option<String>) -> Result<()> {
+async fn showme(
+    app_id: i64,
+    c: Channel,
+    saved_date_str: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    let two_hour_ago = now - chrono::Duration::hours(2);
+
     let saved_date = saved_date_str.as_ref().and_then(|s| parse_date(s));
     println!(
-        "Comparing with saved date (UTC): {:?}",
-        saved_date.map(|dt| dt.to_rfc3339())
+        "Comparing with saved date (UTC): {:?}, and 2-hour limit: {}",
+        saved_date.map(|dt| dt.to_rfc3339()),
+        two_hour_ago.to_rfc3339()
     );
 
     let mut items = c.items;
     items.reverse(); // Process oldest items first
 
     for i in items {
+        let link = i.link.clone().unwrap_or_default();
+        if link.is_empty() {
+            continue;
+        }
+
         let pub_date = i.pub_date.as_ref().and_then(|s| parse_rss_date(s));
 
+        // 1. 2-hour limit check
         if let Some(pd) = pub_date {
+            if pd < two_hour_ago {
+                println!(
+                    "Skipping article older than 2 hours: {} ({})",
+                    i.title.as_ref().unwrap_or(&"".to_string()),
+                    pd.to_rfc3339()
+                );
+                continue;
+            }
+
             if let Some(sd) = saved_date {
                 if pd <= sd {
                     // Item is older or same as saved date, skip
                     continue;
                 }
             }
-        } else if saved_date.is_some() {
-            // If we have a saved date but can't parse this item's date,
-            // we skip it to be safe and avoid re-posting old content.
+        } else {
+            // If we can't parse the date, we skip it to satisfy "DO NOT POST... more than 2 hours ago"
             println!("Skipping item with unparseable date: {:?}", i.pub_date);
             continue;
+        }
+
+        // 2. Duplicate check (Key is "posted message", Value is link)
+        match db::check_link_published(app_id, &link).await {
+            Ok(true) => {
+                // Link already posted, skip
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to check KV for link {}: {:?}",
+                    link, e
+                );
+            }
+            _ => {}
         }
 
         let title = i.title.clone().unwrap_or_default();
@@ -179,18 +229,31 @@ async fn showme(c: Channel, saved_date_str: Option<String>) -> Result<()> {
 
         let msg: String = format!(
             "{}:\n{}\n{}\n({})",
-            title,
-            description,
-            i.link.unwrap_or_default(),
-            pub_date_display
+            title, description, link, pub_date_display
         );
-        println!("Posting new article: {} ({})", title, pub_date_display);
-        toot(msg).await?;
+        println!(
+            "Posting new article: {} ({})",
+            title, pub_date_display
+        );
+        toot(msg, dry_run).await?;
+
+        // 3. Save to KV store (key: "posted message", value: link)
+        if !dry_run {
+            if let Err(e) = db::add_posted_link(app_id, &link).await {
+                eprintln!("Warning: Failed to save posted link to DB: {:?}", e);
+            }
+        }
     }
     Ok(())
 }
 
-async fn magic() -> Result<()> {
+async fn magic(dry_run: bool) -> Result<()> {
+    let app_id = env::var("APP_ID")
+        .unwrap_or_else(|_| "0".to_string())
+        .parse::<i64>()
+        .unwrap_or(0);
+    println!("Running for app_id: {}", app_id);
+
     let rss_url = env::var("NEWSPENGUIN_RSS_URI").unwrap_or_else(|_| {
         "https://www.newspenguin.com/rss/allArticle.xml".to_string()
     });
@@ -199,7 +262,7 @@ async fn magic() -> Result<()> {
     let a = feed(rss_url.to_string()).await?;
 
     let kv_key = "newspenguin-rss.last_build_date";
-    let saved_date_result = db::get_kv(kv_key).await;
+    let saved_date_result = db::get_kv(app_id, kv_key).await;
     let saved_date = match saved_date_result {
         Ok(val) => val,
         Err(e) => {
@@ -212,21 +275,37 @@ async fn magic() -> Result<()> {
     };
     println!("Retrieved saved date from DB: {:?}", saved_date);
 
-    showme(a, saved_date).await?;
+    showme(app_id, a, saved_date, dry_run).await?;
 
-    // Save as "YYYY-MM-DD HH:MM:SS" in UTC
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    println!("Updating saved date in DB to current UTC: {}", now);
-    db::set_kv(kv_key, &now).await?;
+    if !dry_run {
+        // Save as "YYYY-MM-DD HH:MM:SS" in UTC
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        println!("Updating saved date in DB to current UTC: {}", now);
+        db::set_kv(app_id, kv_key, &now).await?;
+
+        println!("Cleaning up posted links older than a week...");
+        if let Err(e) = db::delete_old_posted_messages(app_id).await {
+            eprintln!("Warning: Failed to clean up old posted links: {:?}", e);
+        }
+    } else {
+        println!("Dry run: Skipping DB updates and cleanup.");
+    }
 
     Ok(())
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let dry_run = args.iter().any(|arg| arg == "--dryrun");
+
+    if dry_run {
+        println!("Running in DRY RUN mode");
+    }
+
     println!("Start checking");
 
     futures::executor::block_on(async {
-        if let Err(e) = magic().await {
+        if let Err(e) = magic(dry_run).await {
             eprintln!("Error: {:?}", e);
         }
     });

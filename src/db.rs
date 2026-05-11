@@ -9,166 +9,132 @@
 use crate::wasi_http::http_request;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
 use std::env;
+use std::fs;
 use wasi as bindings;
 
 #[derive(Serialize)]
-struct Value {
-    #[serde(rename = "type")]
-    value_type: String,
-    value: String,
-}
-
-#[derive(Serialize)]
-struct Stmt {
-    sql: String,
-    args: Vec<Value>,
-}
-
-#[derive(Serialize)]
-struct Request {
-    #[serde(rename = "type")]
-    req_type: String,
-    stmt: Stmt,
-}
-
-#[derive(Serialize)]
-struct Pipeline {
-    requests: Vec<Request>,
+struct JsonRpcRequest {
+    jsonrpc: String,
+    method: String,
+    params: serde_json::Value,
+    id: i32,
 }
 
 #[derive(Deserialize)]
-struct PipelineResponse {
-    results: Vec<serde_json::Value>,
+struct JsonRpcResponse {
+    result: Option<serde_json::Value>,
+    error: Option<serde_json::Value>,
 }
 
-async fn execute_sql(
-    sql: String,
-    args: Vec<Value>,
+async fn call_rpc(
+    method: &str,
+    params: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let url_raw = env::var("TURSO_DATABASE_URL").expect("TURSO_DATABASE_URL not set");
-    let mut url = url_raw.trim().to_string();
-    if url.starts_with("libsql://") {
-        url = url.replace("libsql://", "https://");
-    }
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        url = format!("https://{}", url);
-    }
-    
-    let token = env::var("TURSO_AUTH_TOKEN").expect("TURSO_AUTH_TOKEN not set");
-    let token = token.trim();
+    let endpoint = env::var("RPC_ENDPOINT")
+        .map_err(|_| anyhow::anyhow!("RPC_ENDPOINT not set"))?;
+    let token = env::var("LACHUOI_TOKEN")
+        .map_err(|_| anyhow::anyhow!("LACHUOI_TOKEN not set"))?;
+    let app_id = env::var("APP_ID")
+        .map_err(|_| anyhow::anyhow!("APP_ID not set"))?
+        .parse::<i64>()?;
 
-    let pipeline = Pipeline {
-        requests: vec![
-            Request {
-                req_type: "execute".to_string(),
-                stmt: Stmt { sql, args },
-            },
-            Request {
-                req_type: "close".to_string(),
-                stmt: Stmt {
-                    sql: "".to_string(),
-                    args: vec![],
-                },
-            },
-        ],
+    let mut rpc_params = params;
+    if let Some(obj) = rpc_params.as_object_mut() {
+        obj.insert("token".to_string(), json!(token));
+        obj.insert("task_id".to_string(), json!(app_id));
+    }
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: method.to_string(),
+        params: rpc_params,
+        id: 1,
     };
 
-    let body = serde_json::to_vec(&pipeline)?;
-    let headers = vec![
-        (
-            "Authorization".to_string(),
-            format!("Bearer {}", token).into_bytes(),
-        ),
-        (
-            "Content-Type".to_string(),
-            "application/json".to_string().into_bytes(),
-        ),
-    ];
+    let body = serde_json::to_vec(&request)?;
+    let headers = vec![(
+        "Content-Type".to_string(),
+        "application/json".to_string().into_bytes(),
+    )];
 
-    let full_url = format!("{}/v2/pipeline", url.trim_end_matches('/'));
     let resp_body = http_request(
         bindings::http::types::Method::Post,
-        &full_url,
+        &endpoint,
         headers,
         Some(body),
     )
     .await?;
 
-    let resp: PipelineResponse = serde_json::from_slice(&resp_body)?;
-    let result = resp
-        .results
-        .get(0)
-        .ok_or_else(|| anyhow::anyhow!("No results in pipeline response from {}", full_url))?;
-
-    if let Some(error) = result.get("error") {
-        return Err(anyhow::anyhow!("Turso error at {}: {}", full_url, error));
+    let resp: JsonRpcResponse = serde_json::from_slice(&resp_body)?;
+    if let Some(error) = resp.error {
+        return Err(anyhow::anyhow!("JSON-RPC error: {}", error));
     }
 
-    let response = result
-        .get("response")
-        .ok_or_else(|| anyhow::anyhow!("No response in pipeline result from {}", full_url))?;
-    Ok(response.clone())
+    resp.result
+        .ok_or_else(|| anyhow::anyhow!("Missing result in JSON-RPC response"))
 }
 
-pub async fn get_kv(key: &str) -> Result<Option<String>> {
-    let table_name_raw = env::var("TURSO_KV_TABLE").unwrap_or_else(|_| "lachuoi_kv_store".to_string());
-    let table_name = table_name_raw.trim();
-    let table_name = if table_name.is_empty() { "lachuoi_kv_store" } else { table_name };
+const LOCAL_STORAGE_FILE: &str = "storage.json";
 
-    // Ensure table exists
-    let _ = execute_sql(
-        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", table_name),
-        vec![],
-    )
-    .await?;
-
-    let resp = execute_sql(
-        format!("SELECT value FROM {} WHERE key = ?", table_name),
-        vec![Value {
-            value_type: "text".to_string(),
-            value: key.to_string(),
-        }],
-    )
-    .await?;
-
-    // Try multiple pointers as Turso API versions vary
-    let val = resp.pointer("/result/rows/0/0/value")
-        .or_else(|| resp.pointer("/result/rows/0/0"));
-    
-    match val {
-        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
-        Some(v) => Ok(Some(v.to_string().trim_matches('"').to_string())),
-        _ => Ok(None),
+fn load_local_storage() -> HashMap<String, String> {
+    if let Ok(content) = fs::read_to_string(LOCAL_STORAGE_FILE) {
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        HashMap::new()
     }
 }
 
-pub async fn set_kv(key: &str, value: &str) -> Result<()> {
-    let table_name_raw = env::var("TURSO_KV_TABLE").unwrap_or_else(|_| "lachuoi_kv_store".to_string());
-    let table_name = table_name_raw.trim();
-    let table_name = if table_name.is_empty() { "lachuoi_kv_store" } else { table_name };
-
-    // Ensure table exists
-    let _ = execute_sql(
-        format!("CREATE TABLE IF NOT EXISTS {} (key TEXT PRIMARY KEY, value TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", table_name),
-        vec![],
-    )
-    .await?;
-
-    execute_sql(
-        format!("INSERT INTO {} (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP", table_name),
-        vec![
-            Value {
-                value_type: "text".to_string(),
-                value: key.to_string(),
-            },
-            Value {
-                value_type: "text".to_string(),
-                value: value.to_string(),
-            },
-        ],
-    )
-    .await?;
-    
+fn save_local_storage(storage: &HashMap<String, String>) -> Result<()> {
+    let content = serde_json::to_string_pretty(storage)?;
+    fs::write(LOCAL_STORAGE_FILE, content)?;
     Ok(())
 }
+
+pub async fn get_kv(_app_id: i64, key: &str) -> Result<Option<String>> {
+    if env::var("RPC_ENDPOINT").is_err() {
+        let storage = load_local_storage();
+        return Ok(storage.get(key).cloned());
+    }
+
+    let resp = call_rpc("kv_get", json!({ "key": key })).await?;
+    match resp {
+        serde_json::Value::String(s) => Ok(Some(s)),
+        serde_json::Value::Null => Ok(None),
+        _ => Ok(Some(resp.to_string())),
+    }
+}
+
+pub async fn set_kv(_app_id: i64, key: &str, value: &str) -> Result<()> {
+    if env::var("RPC_ENDPOINT").is_err() {
+        let mut storage = load_local_storage();
+        storage.insert(key.to_string(), value.to_string());
+        return save_local_storage(&storage);
+    }
+
+    call_rpc("kv_set", json!({ "key": key, "value": value })).await?;
+    Ok(())
+}
+
+pub async fn check_link_published(_app_id: i64, link: &str) -> Result<bool> {
+    let key = format!("link:{}", link);
+    let val = get_kv(0, &key).await?;
+    Ok(val.is_some())
+}
+
+pub async fn add_posted_link(_app_id: i64, link: &str) -> Result<()> {
+    let key = format!("link:{}", link);
+    set_kv(0, &key, "1").await?;
+    Ok(())
+}
+
+pub async fn delete_old_posted_messages(_app_id: i64) -> Result<()> {
+    // La Chuoi RPC does not currently support bulk deletion or listing.
+    // Old links will remain in the KV store for now.
+    Ok(())
+}
+
+// execute_sql is removed as it's not supported by La Chuoi RPC directly.
+// If needed, it should be replaced by high-level KV operations.

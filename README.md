@@ -6,7 +6,7 @@ A WASI-based bot that monitors the NewsPenguin RSS feed and posts new articles t
 
 - **WASI Component**: Built as a WebAssembly component using `cargo-component` and WASI 0.2.
 - **RSS Monitoring**: Fetches and parses RSS feeds (defaulting to NewsPenguin).
-- **Persistence**: Tracks the last processed article date using Turso (libSQL) to avoid duplicate posts.
+- **Persistence**: Tracks the last processed article date using La Chuoi JSON-RPC KV store to avoid duplicate posts.
 - **Mastodon Integration**: Automatically posts new articles to a configured Mastodon account with public visibility.
 
 ## Prerequisites
@@ -22,13 +22,13 @@ The bot is configured via environment variables. Ensure these are set in your ho
 
 | Variable | Description | Default / Example |
 |----------|-------------|-------------------|
+| `APP_ID` | Unique numeric ID of the task | **Provided by Runtime** |
+| `LACHUOI_TOKEN` | Auth token for system RPC calls | **Provided by Runtime** |
+| `RPC_ENDPOINT` | HTTP URI of the JSON-RPC service | **Provided by Runtime** |
 | `NEWSPENGUIN_MSTD_ACCESS_TOKEN` | Mastodon API access token | **Required** |
 | `NEWSPENGUIN_MSTD_API_URI` | Mastodon instance URL | `https://mstd.seungjin.net` |
 | `NEWSPENGUIN_RSS_URI` | RSS feed URL | `https://www.newspenguin.com/rss/allArticle.xml` |
 | `NEWSPENGUIN_USER_AGENT` | Custom User-Agent header | (Optional) |
-| `TURSO_DATABASE_URL` | Turso/libSQL database URL | `libsql://your-db.turso.io` |
-| `TURSO_AUTH_TOKEN` | Turso/libSQL auth token | **Required** |
-| `TURSO_KV_TABLE` | Table name for KV storage | `lachuoi_kv_store` |
 
 ## Usage
 
@@ -57,6 +57,15 @@ just run-release
 ```
 
 This command enables the necessary WASI features (HTTP, network, environment inheritance).
+
+### Standalone Mode
+
+The bot can be run standalone without a La Chuoi server. If the `RPC_ENDPOINT` environment variable is not set, the bot will automatically fall back to using a local `storage.json` file in the current directory for persistence.
+
+### Environment Behavior
+
+- **Production**: Default behavior. Posts to Mastodon and uses RPC for persistence if available.
+- **Development**: If `ENVIRONMENT=development` is set, the bot will log messages to the console but **will not** post to Mastodon.
 
 ### Deployment
 
