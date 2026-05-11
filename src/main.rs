@@ -201,7 +201,7 @@ async fn showme(
             continue;
         }
 
-        // 2. Duplicate check (Key is "posted message", Value is link)
+        // 2. Duplicate check (Key is "posted link", Value is "link:<url>")
         match db::check_link_published(app_id, &link).await {
             Ok(true) => {
                 // Link already posted, skip
@@ -237,7 +237,7 @@ async fn showme(
         );
         toot(msg, dry_run).await?;
 
-        // 3. Save to KV store (key: "posted message", value: link)
+        // 3. Save to KV store (key: "posted link", value: "link:<url>")
         if !dry_run {
             if let Err(e) = db::add_posted_link(app_id, &link).await {
                 eprintln!("Warning: Failed to save posted link to DB: {:?}", e);
