@@ -79,97 +79,104 @@ async fn call_rpc(
 
 const LOCAL_STORAGE_FILE: &str = "storage.json";
 
-fn load_local_storage() -> HashMap<String, Vec<String>> {
+fn load_local_storage() -> HashMap<String, String> {
     if let Ok(content) = fs::read_to_string(LOCAL_STORAGE_FILE) {
         if let Ok(storage) =
-            serde_json::from_str::<HashMap<String, Vec<String>>>(&content)
-        {
-            return storage;
-        }
-        // Fallback and migration from old format
-        if let Ok(old_storage) =
             serde_json::from_str::<HashMap<String, String>>(&content)
         {
-            let mut new_storage: HashMap<String, Vec<String>> = HashMap::new();
-            for (k, v) in old_storage {
-                if k.starts_with("link:") {
-                    // Strip "link:" prefix and use "posted link" as key
-                    new_storage
-                        .entry("posted link".to_string())
-                        .or_default()
-                        .push(k["link:".len()..].to_string());
-                } else {
-                    new_storage.insert(k, vec![v]);
-                }
-            }
-            return new_storage;
+            return storage;
         }
     }
     HashMap::new()
 }
 
-fn save_local_storage(storage: &HashMap<String, Vec<String>>) -> Result<()> {
+fn save_local_storage(storage: &HashMap<String, String>) -> Result<()> {
     let content = serde_json::to_string_pretty(storage)?;
     fs::write(LOCAL_STORAGE_FILE, content)?;
     Ok(())
 }
 
-pub async fn get_kv_list(_app_id: i64, key: &str) -> Result<Vec<String>> {
+pub async fn get_kv(_app_id: i64, key: &str) -> Result<Option<String>> {
     if env::var("RPC_ENDPOINT").is_err() {
         let storage = load_local_storage();
-        return Ok(storage.get(key).cloned().unwrap_or_default());
+        return Ok(storage.get(key).cloned());
     }
 
-    let resp = call_rpc("get_key", json!({ "key": key })).await?;
+    let resp = call_rpc("get_kv", json!({ "key": key })).await?;
     match resp {
-        serde_json::Value::Array(arr) => {
-            let res = arr
-                .into_iter()
-                .map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string())
-                })
-                .collect();
-            Ok(res)
-        }
-        serde_json::Value::String(s) => Ok(vec![s]),
-        serde_json::Value::Null => Ok(vec![]),
-        _ => Ok(vec![resp.to_string()]),
+        serde_json::Value::String(s) => Ok(Some(s)),
+        _ => Ok(None),
     }
-}
-
-pub async fn get_kv(app_id: i64, key: &str) -> Result<Option<String>> {
-    let list = get_kv_list(app_id, key).await?;
-    Ok(list.last().cloned())
 }
 
 pub async fn set_kv(_app_id: i64, key: &str, value: &str) -> Result<()> {
     if env::var("RPC_ENDPOINT").is_err() {
         let mut storage = load_local_storage();
-        storage.entry(key.to_string()).or_default().push(value.to_string());
+        storage.insert(key.to_string(), value.to_string());
         return save_local_storage(&storage);
     }
 
-    call_rpc("set_key", json!({ "key": key, "value": value })).await?;
+    call_rpc("set_kv", json!({ "key": key, "value": value })).await?;
     Ok(())
+}
+
+pub async fn delete_kv(_app_id: i64, key: &str) -> Result<()> {
+    if env::var("RPC_ENDPOINT").is_err() {
+        let mut storage = load_local_storage();
+        storage.remove(key);
+        return save_local_storage(&storage);
+    }
+
+    call_rpc("set_kv", json!({ "key": key, "value": serde_json::Value::Null })).await?;
+    Ok(())
+}
+
+pub async fn list_kv(_app_id: i64) -> Result<HashMap<String, String>> {
+    if env::var("RPC_ENDPOINT").is_err() {
+        return Ok(load_local_storage());
+    }
+
+    let resp = call_rpc("get_kv", json!({ "key": serde_json::Value::Null })).await?;
+    match resp {
+        serde_json::Value::Object(map) => {
+            let mut res = HashMap::new();
+            for (k, v) in map {
+                if let Some(s) = v.as_str() {
+                    res.insert(k, s.to_string());
+                }
+            }
+            Ok(res)
+        }
+        _ => Ok(HashMap::new()),
+    }
 }
 
 pub async fn check_link_published(app_id: i64, link: &str) -> Result<bool> {
-    let links = get_kv_list(app_id, "posted link").await?;
-    Ok(links.contains(&link.to_string()))
+    // Unique key per link
+    let key = format!("link:{}", link);
+    Ok(get_kv(app_id, &key).await?.is_some())
 }
 
 pub async fn add_posted_link(app_id: i64, link: &str) -> Result<()> {
-    set_kv(app_id, "posted link", link).await?;
+    let key = format!("link:{}", link);
+    let now = chrono::Utc::now().to_rfc3339();
+    set_kv(app_id, &key, &now).await?;
     Ok(())
 }
 
-pub async fn delete_old_posted_messages(_app_id: i64) -> Result<()> {
-    // La Chuoi RPC does not currently support bulk deletion or listing.
-    // Old links will remain in the KV store for now.
+pub async fn delete_old_posted_messages(app_id: i64) -> Result<()> {
+    let all = list_kv(app_id).await?;
+    let now = chrono::Utc::now();
+    let week_ago = now - chrono::Duration::days(7);
+
+    for (k, v) in all {
+        if k.starts_with("link:") {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&v) {
+                if dt.with_timezone(&chrono::Utc) < week_ago {
+                    let _ = delete_kv(app_id, &k).await;
+                }
+            }
+        }
+    }
     Ok(())
 }
-
-// execute_sql is removed as it's not supported by La Chuoi RPC directly.
-// If needed, it should be replaced by high-level KV operations.

@@ -2,3 +2,4 @@
 target
 .env
 nohup.out
+storage.json

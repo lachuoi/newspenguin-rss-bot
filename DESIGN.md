@@ -48,7 +48,7 @@ When running outside of a La Chuoi environment (e.g., local development), the bo
 
 1.  **Fetch**: Fetch the RSS feed using `wasi-http`.
 2.  **Filter**:
-    -   Discard articles older than 2 hours.
+    -   Discard articles older than 24 hours.
     -   Discard articles older than the `last_build_date`.
 3.  **Check Duplicates**: Query the KV store for the article link under the `posted link` key.
 4.  **Post**: If new, post the article to Mastodon using its REST API.

@@ -31,14 +31,14 @@ echo "Account ID: $ACCOUNT_ID"
 TOTAL_DELETED=0
 
 while true; do
-  FIVE_HOURS_AGO=$(date -u -d "24 hours ago" +%s)
-  echo "Searching for posts newer than $(date -u -d "3 hours ago") (Timestamp: $FIVE_HOURS_AGO)"
+  TWENTY_FOUR_HOURS_AGO=$(date -u -d "24 hours ago" +%s)
+  echo "Searching for posts newer than 24 hours ago (Timestamp: $TWENTY_FOUR_HOURS_AGO)"
 
   # 2. Get statuses
   STATUSES=$(curl -s -H "Authorization: Bearer $NEWSPENGUIN_MSTD_ACCESS_TOKEN" "$API_BASE/api/v1/accounts/$ACCOUNT_ID/statuses?limit=40")
   
   # Filter statuses that match the criteria
-  MATCHING_STATUSES=$(echo "$STATUSES" | jq -c ".[] | select((.created_at | sub(\"\\\\.[0-9]+Z$\"; \"Z\") | fromdateiso8601) > $FIVE_HOURS_AGO)")
+  MATCHING_STATUSES=$(echo "$STATUSES" | jq -c ".[] | select((.created_at | sub(\"\\\\.[0-9]+Z$\"; \"Z\") | fromdateiso8601) > $TWENTY_FOUR_HOURS_AGO)")
   
   if [ -z "$MATCHING_STATUSES" ]; then
     echo "No more matching posts found."

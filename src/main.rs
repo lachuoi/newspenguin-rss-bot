@@ -158,13 +158,13 @@ async fn showme(
     dry_run: bool,
 ) -> Result<()> {
     let now = chrono::Utc::now();
-    let two_hour_ago = now - chrono::Duration::hours(2);
+    let twenty_four_hour_ago = now - chrono::Duration::hours(24);
 
     let saved_date = saved_date_str.as_ref().and_then(|s| parse_date(s));
     println!(
-        "Comparing with saved date (UTC): {:?}, and 2-hour limit: {}",
+        "Comparing with saved date (UTC): {:?}, and 24-hour limit: {}",
         saved_date.map(|dt| dt.to_rfc3339()),
-        two_hour_ago.to_rfc3339()
+        twenty_four_hour_ago.to_rfc3339()
     );
 
     let mut items = c.items;
@@ -178,11 +178,11 @@ async fn showme(
 
         let pub_date = i.pub_date.as_ref().and_then(|s| parse_rss_date(s));
 
-        // 1. 2-hour limit check
+        // 1. 24-hour limit check
         if let Some(pd) = pub_date {
-            if pd < two_hour_ago {
+            if pd < twenty_four_hour_ago {
                 println!(
-                    "Skipping article older than 2 hours: {} ({})",
+                    "Skipping article older than 24 hours: {} ({})",
                     i.title.as_ref().unwrap_or(&"".to_string()),
                     pd.to_rfc3339()
                 );
@@ -196,7 +196,7 @@ async fn showme(
                 }
             }
         } else {
-            // If we can't parse the date, we skip it to satisfy "DO NOT POST... more than 2 hours ago"
+            // If we can't parse the date, we skip it to satisfy "DO NOT POST... more than 24 hours ago"
             println!("Skipping item with unparseable date: {:?}", i.pub_date);
             continue;
         }
